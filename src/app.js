@@ -11,6 +11,7 @@ import { createVipForm } from './components/VipForm.js';
 import { createFirewallForm } from './components/FirewallForm.js';
 import { createMatrixTable } from './components/MatrixTable.js';
 import { createExportPanel } from './components/ExportPanel.js';
+import { createSettingsForm } from './components/SettingsForm.js';
 import { store } from './core/store.js';
 import { loadSampleData } from './sampleData.js';
 
@@ -21,6 +22,7 @@ const TAB_CONFIG = [
   { id: 'vips', label: 'VIPs / NAT' },
   { id: 'rules', label: 'Firewall Rules' },
   { id: 'matrix', label: 'Matrix Overview' },
+  { id: 'settings', label: 'Settings' },
 ];
 
 let activeTab = 'objects';
@@ -55,6 +57,9 @@ function switchTab(tabId) {
       break;
     case 'matrix':
       currentComponent = createMatrixTable(contentEl);
+      break;
+    case 'settings':
+      currentComponent = createSettingsForm(contentEl);
       break;
   }
 }
@@ -114,3 +119,73 @@ function init() {
 
 // Boot
 document.addEventListener('DOMContentLoaded', init);
+
+// --- Custom Confirm Dialog -------------------------------------------------
+
+/**
+ * Show a styled confirmation dialog (replaces native confirm).
+ * Uses textContent for title/message to prevent XSS.
+ * @param {string} title
+ * @param {string} message
+ * @returns {Promise<boolean>}
+ */
+export function showConfirm(title, message) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const cleanup = (result) => {
+      if (resolved) return;
+      resolved = true;
+      document.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+      resolve(result);
+    };
+
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+
+    const dialog = document.createElement('div');
+    dialog.className = 'confirm-dialog';
+
+    const h4 = document.createElement('h4');
+    h4.textContent = title;
+
+    const p = document.createElement('p');
+    p.textContent = message;
+
+    const actions = document.createElement('div');
+    actions.className = 'confirm-actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn btn-secondary';
+    cancelBtn.textContent = 'Cancel';
+
+    const okBtn = document.createElement('button');
+    okBtn.className = 'btn btn-danger';
+    okBtn.textContent = 'Confirm';
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(okBtn);
+    dialog.appendChild(h4);
+    dialog.appendChild(p);
+    dialog.appendChild(actions);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    okBtn.addEventListener('click', () => cleanup(true));
+    cancelBtn.addEventListener('click', () => cleanup(false));
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) cleanup(false);
+    });
+
+    // Document-level Escape handler (works regardless of focus)
+    const onKeydown = (e) => {
+      if (e.key === 'Escape') cleanup(false);
+    };
+    document.addEventListener('keydown', onKeydown);
+
+    // Focus the cancel button by default (safer)
+    cancelBtn.focus();
+  });
+}

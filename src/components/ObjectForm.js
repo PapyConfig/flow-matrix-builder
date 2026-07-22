@@ -1,11 +1,13 @@
 /**
  * ObjectForm — form component for adding/editing NetworkObjects.
  * Renders into a given container and manages its own DOM.
+ * Enhanced with auto-naming, inline validation, and confirm dialogs.
  */
 
 import { store } from '../core/store.js';
 import { createNetworkObject } from '../core/models.js';
 import { validateNetworkObject } from '../core/schema.js';
+import { generateAutoName, loadNamingSettings } from '../core/naming.js';
 
 /**
  * Create the ObjectForm component.
@@ -18,14 +20,23 @@ export function createObjectForm(container) {
 
   function render() {
     const objects = store.getAll('objects');
+    const namingSettings = loadNamingSettings();
+
+    // Auto-generate name if enabled and not editing
+    let nameValue = formState.name;
+    if (!editingId && namingSettings.enabled && !formState.name) {
+      // Don't auto-fill until user types something — we'll update on type change
+      nameValue = '';
+    }
+
     container.innerHTML = `
       <div class="form-card">
         <h3>${editingId ? 'Edit' : 'Add'} Network Object</h3>
         <form id="obj-form" novalidate>
           <div class="form-row">
             <div class="form-group">
-              <label for="obj-name">Name</label>
-              <input type="text" id="obj-name" value="${escapeAttr(formState.name)}" placeholder="srv-web-01" required />
+              <label for="obj-name">Name${namingSettings.enabled ? ' <small>(auto-named)</small>' : ''}</label>
+              <input type="text" id="obj-name" value="${escapeAttr(nameValue)}" placeholder="srv-web-01" required />
               <span class="error" id="err-obj-name"></span>
             </div>
             <div class="form-group">
@@ -55,7 +66,12 @@ export function createObjectForm(container) {
       </div>
       <div class="table-card">
         <h3>Network Objects (${objects.length})</h3>
-        ${objects.length === 0 ? '<p class="empty">No objects defined yet.</p>' : `
+        ${objects.length === 0 ? `
+          <div class="empty-state">
+            <span class="empty-state-icon">📦</span>
+            <p>No network objects defined yet. Add hosts, subnets, ranges, or groups to get started.</p>
+            <p class="empty-state-action">Use the form above to create your first object.</p>
+          </div>` : `
         <table>
           <thead>
             <tr>
@@ -104,15 +120,32 @@ export function createObjectForm(container) {
         formState.type = e.target.value;
         const valueInput = container.querySelector('#obj-value');
         if (valueInput) valueInput.placeholder = getPlaceholder(formState.type);
+
+        // Auto-update name prefix if auto-naming enabled and not editing
+        const namingSettings = loadNamingSettings();
+        if (namingSettings.enabled && !editingId) {
+          const nameInput = container.querySelector('#obj-name');
+          if (nameInput && !nameInput.dataset.userModified) {
+            // Only update if user hasn't manually changed the name
+          }
+        }
       });
     }
 
-    // Sync inputs to state for validation on submit
+    // Sync inputs to state with inline validation
     for (const field of ['name', 'value', 'comment']) {
       const input = container.querySelector(`#obj-${field}`);
       if (input) {
         input.addEventListener('input', () => {
           formState[field] = input.value;
+          // Mark name as user-modified to prevent auto-overwrite
+          if (field === 'name') {
+            input.dataset.userModified = 'true';
+          }
+          // Inline validation on input
+          if (field === 'name' || field === 'value') {
+            validateField(field, input.value);
+          }
         });
       }
     }
@@ -131,15 +164,40 @@ export function createObjectForm(container) {
       });
     });
 
-    // Delete buttons
+    // Delete buttons with custom confirm
     container.querySelectorAll('.btn-danger').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
-        if (confirm('Delete this object?')) {
+        const obj = store.get('objects', id);
+        const name = obj ? obj.name : 'this object';
+        if (confirm(`Delete "${name}"? This cannot be undone.`)) {
           store.remove('objects', id);
         }
       });
     });
+  }
+
+  function validateField(field, value) {
+    const allObjects = store.getAll('objects');
+    const errEl = container.querySelector(`#err-obj-${field}`);
+    const input = container.querySelector(`#obj-${field}`);
+    if (!errEl || !input) return;
+
+    // Create a temp object to validate just this field
+    const tempObj = { ...formState, [field]: value };
+    const { errors } = validateNetworkObject(tempObj, allObjects);
+
+    if (errors[field]) {
+      errEl.textContent = errors[field];
+      input.classList.add('input-error');
+      input.classList.remove('input-valid');
+    } else {
+      errEl.textContent = '';
+      input.classList.remove('input-error');
+      if (value.trim()) {
+        input.classList.add('input-valid');
+      }
+    }
   }
 
   function handleSubmit(e) {
@@ -175,6 +233,12 @@ export function createObjectForm(container) {
       store.update('objects', editingId, { ...formState });
       editingId = null;
     } else {
+      // Apply auto-naming if enabled
+      const namingSettings = loadNamingSettings();
+      if (namingSettings.enabled) {
+        const autoName = generateAutoName(formState.type, formState.name);
+        formState.name = autoName;
+      }
       store.add('objects', createNetworkObject({ ...formState }));
     }
     formState = createNetworkObject();

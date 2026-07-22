@@ -1,10 +1,12 @@
 /**
  * VipForm — form component for adding/editing VIP/NAT entries.
+ * Enhanced with auto-naming, inline validation, and confirm dialogs.
  */
 
 import { store } from '../core/store.js';
 import { createVipNat } from '../core/models.js';
 import { validateVipNat } from '../core/schema.js';
+import { generateAutoName, loadNamingSettings } from '../core/naming.js';
 
 /**
  * Create the VipForm component.
@@ -17,13 +19,15 @@ export function createVipForm(container) {
 
   function render() {
     const vips = store.getAll('vips');
+    const namingSettings = loadNamingSettings();
+
     container.innerHTML = `
       <div class="form-card">
         <h3>${editingId ? 'Edit' : 'Add'} VIP / NAT Rule</h3>
         <form id="vip-form" novalidate>
           <div class="form-row">
             <div class="form-group">
-              <label for="vip-name">Name</label>
+              <label for="vip-name">Name${namingSettings.enabled ? ' <small>(auto-named)</small>' : ''}</label>
               <input type="text" id="vip-name" value="${escapeAttr(formState.name)}" placeholder="vip-web-https" required />
               <span class="error" id="err-vip-name"></span>
             </div>
@@ -70,7 +74,12 @@ export function createVipForm(container) {
       </div>
       <div class="table-card">
         <h3>VIP / NAT Rules (${vips.length})</h3>
-        ${vips.length === 0 ? '<p class="empty">No VIPs defined yet.</p>' : `
+        ${vips.length === 0 ? `
+          <div class="empty-state">
+            <span class="empty-state-icon">🌐</span>
+            <p>No VIP/NAT rules defined yet. VIPs map external IPs to internal servers.</p>
+            <p class="empty-state-action">Use the form above to create your first VIP.</p>
+          </div>` : `
         <table>
           <thead>
             <tr>
@@ -118,7 +127,13 @@ export function createVipForm(container) {
     fields.forEach((field, i) => {
       const input = container.querySelector(`#vip-${domIds[i]}`);
       if (input) {
-        input.addEventListener('input', () => { formState[field] = input.value; });
+        input.addEventListener('input', () => {
+          formState[field] = input.value;
+          // Inline validation for required fields
+          if (['name', 'externalIp', 'externalPort', 'mappedIp', 'mappedPort'].includes(field)) {
+            validateField(field, domIds[i], input.value);
+          }
+        });
       }
     });
 
@@ -140,10 +155,35 @@ export function createVipForm(container) {
     });
 
     container.querySelectorAll('.btn-danger').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (confirm('Delete this VIP?')) store.remove('vips', btn.dataset.id);
+      btn.addEventListener('click', async () => {
+        const vip = store.get('vips', btn.dataset.id);
+        const name = vip ? vip.name : 'this VIP';
+        if (confirm(`Delete "${name}"? This cannot be undone.`)) {
+          store.remove('vips', btn.dataset.id);
+        }
       });
     });
+  }
+
+  function validateField(field, domId, value) {
+    const errEl = container.querySelector(`#err-vip-${domId}`);
+    const input = container.querySelector(`#vip-${domId}`);
+    if (!errEl || !input) return;
+
+    const tempVip = { ...formState, [field]: value };
+    const { errors } = validateVipNat(tempVip);
+
+    if (errors[field]) {
+      errEl.textContent = errors[field];
+      input.classList.add('input-error');
+      input.classList.remove('input-valid');
+    } else {
+      errEl.textContent = '';
+      input.classList.remove('input-error');
+      if (value.trim()) {
+        input.classList.add('input-valid');
+      }
+    }
   }
 
   function handleSubmit(e) {
@@ -182,6 +222,12 @@ export function createVipForm(container) {
       store.update('vips', editingId, { ...formState });
       editingId = null;
     } else {
+      // Apply auto-naming if enabled
+      const namingSettings = loadNamingSettings();
+      if (namingSettings.enabled) {
+        const autoName = generateAutoName('vip', formState.name);
+        formState.name = autoName;
+      }
       store.add('vips', createVipNat({ ...formState }));
     }
     formState = createVipNat();

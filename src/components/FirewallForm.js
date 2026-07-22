@@ -1,11 +1,13 @@
 /**
  * FirewallForm — form component for adding/editing FirewallRules.
- * Source, destination, and service are comma-separated lists.
+ * Enhanced with autocomplete tag inputs, auto-naming, inline validation.
  */
 
 import { store } from '../core/store.js';
 import { createFirewallRule } from '../core/models.js';
 import { validateFirewallRule } from '../core/schema.js';
+import { generateAutoName, loadNamingSettings } from '../core/naming.js';
+import { createTagInput } from './TagInput.js';
 
 /**
  * Create the FirewallForm component.
@@ -15,34 +17,37 @@ import { validateFirewallRule } from '../core/schema.js';
 export function createFirewallForm(container) {
   let editingId = null;
   let formState = createFirewallRule();
+  let tagInputs = [];
 
   function render() {
     const rules = store.getAll('rules');
+    const namingSettings = loadNamingSettings();
+
     container.innerHTML = `
       <div class="form-card">
         <h3>${editingId ? 'Edit' : 'Add'} Firewall Rule</h3>
         <form id="fw-form" novalidate>
           <div class="form-row">
             <div class="form-group">
-              <label for="fw-name">Rule Name</label>
+              <label for="fw-name">Rule Name${namingSettings.enabled ? ' <small>(auto-named)</small>' : ''}</label>
               <input type="text" id="fw-name" value="${escapeAttr(formState.name)}" placeholder="allow-web-https" required />
               <span class="error" id="err-fw-name"></span>
             </div>
             <div class="form-group">
-              <label for="fw-source">Source <small>(comma-separated)</small></label>
-              <input type="text" id="fw-source" value="${escapeAttr((formState.source || []).join(', '))}" placeholder="obj-ext-lb, 10.0.0.5" required />
+              <label for="fw-source">Source <small>(search or type free-form)</small></label>
+              <input type="text" id="fw-source" value="${escapeAttr((formState.source || []).join(', '))}" placeholder="Search objects or type IPs..." required />
               <span class="error" id="err-fw-source"></span>
             </div>
             <div class="form-group">
-              <label for="fw-dest">Destination <small>(comma-separated)</small></label>
-              <input type="text" id="fw-dest" value="${escapeAttr((formState.destination || []).join(', '))}" placeholder="srv-web-01, vip-web-https" required />
+              <label for="fw-dest">Destination <small>(search or type free-form)</small></label>
+              <input type="text" id="fw-dest" value="${escapeAttr((formState.destination || []).join(', '))}" placeholder="Search objects or type IPs..." required />
               <span class="error" id="err-fw-dest"></span>
             </div>
           </div>
           <div class="form-row">
             <div class="form-group">
               <label for="fw-service">Service <small>(e.g. tcp/443, udp/53)</small></label>
-              <input type="text" id="fw-service" value="${escapeAttr((formState.service || []).join(', '))}" placeholder="tcp/443, tcp/80" required />
+              <input type="text" id="fw-service" value="${escapeAttr((formState.service || []).join(', '))}" placeholder="tcp/443, udp/53" required />
               <span class="error" id="err-fw-service"></span>
             </div>
             <div class="form-group">
@@ -77,7 +82,12 @@ export function createFirewallForm(container) {
       </div>
       <div class="table-card">
         <h3>Firewall Rules (${rules.length})</h3>
-        ${rules.length === 0 ? '<p class="empty">No firewall rules defined yet.</p>' : `
+        ${rules.length === 0 ? `
+          <div class="empty-state">
+            <span class="empty-state-icon">🔥</span>
+            <p>No firewall rules defined yet. Rules define what traffic is allowed or denied between your network objects.</p>
+            <p class="empty-state-action">First add network objects and VIPs, then create rules here.</p>
+          </div>` : `
         <table>
           <thead>
             <tr>
@@ -106,6 +116,44 @@ export function createFirewallForm(container) {
       </div>
     `;
     bindEvents();
+    initTagInputs();
+  }
+
+  function initTagInputs() {
+    // Destroy previous tag inputs
+    tagInputs.forEach(ti => ti.destroy());
+    tagInputs = [];
+
+    const srcGroup = container.querySelector('#fw-source')?.closest('.form-group');
+    const dstGroup = container.querySelector('#fw-dest')?.closest('.form-group');
+    const svcGroup = container.querySelector('#fw-service')?.closest('.form-group');
+
+    if (srcGroup) {
+      tagInputs.push(createTagInput(srcGroup, {
+        inputId: 'fw-source',
+        initialValues: formState.source || [],
+        searchType: 'object',
+        onChange: (vals) => { formState.source = vals; },
+      }));
+    }
+
+    if (dstGroup) {
+      tagInputs.push(createTagInput(dstGroup, {
+        inputId: 'fw-dest',
+        initialValues: formState.destination || [],
+        searchType: 'vip',
+        onChange: (vals) => { formState.destination = vals; },
+      }));
+    }
+
+    if (svcGroup) {
+      tagInputs.push(createTagInput(svcGroup, {
+        inputId: 'fw-service',
+        initialValues: formState.service || [],
+        searchType: 'service',
+        onChange: (vals) => { formState.service = vals; },
+      }));
+    }
   }
 
   function bindEvents() {
@@ -121,22 +169,23 @@ export function createFirewallForm(container) {
       });
     }
 
-    const fieldMap = {
-      'fw-name': 'name', 'fw-source': '_sourceStr', 'fw-dest': '_destStr',
-      'fw-service': '_serviceStr', 'fw-comment': 'comment', 'fw-schedule': 'schedule',
-    };
-    for (const [domId, stateKey] of Object.entries(fieldMap)) {
-      const input = container.querySelector(`#${domId}`);
-      if (input) {
-        input.addEventListener('input', () => {
-          if (stateKey === '_sourceStr' || stateKey === '_destStr' || stateKey === '_serviceStr') {
-            // Just store raw string, parse on submit
-            formState[stateKey] = input.value;
-          } else {
-            formState[stateKey] = input.value;
-          }
-        });
-      }
+    // Sync non-tag inputs
+    const nameInput = container.querySelector('#fw-name');
+    if (nameInput) {
+      nameInput.addEventListener('input', () => {
+        formState.name = nameInput.value;
+        validateField('name', nameInput.value);
+      });
+    }
+
+    const commentInput = container.querySelector('#fw-comment');
+    if (commentInput) {
+      commentInput.addEventListener('input', () => { formState.comment = commentInput.value; });
+    }
+
+    const scheduleInput = container.querySelector('#fw-schedule');
+    if (scheduleInput) {
+      scheduleInput.addEventListener('input', () => { formState.schedule = scheduleInput.value; });
     }
 
     const actionSelect = container.querySelector('#fw-action');
@@ -154,7 +203,7 @@ export function createFirewallForm(container) {
         const obj = store.get('rules', btn.dataset.id);
         if (obj) {
           editingId = btn.dataset.id;
-          formState = { ...obj, _sourceStr: (obj.source || []).join(', '), _destStr: (obj.destination || []).join(', '), _serviceStr: (obj.service || []).join(', ') };
+          formState = { ...obj };
           render();
           container.querySelector('#fw-name')?.focus();
         }
@@ -162,24 +211,46 @@ export function createFirewallForm(container) {
     });
 
     container.querySelectorAll('.btn-danger').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (confirm('Delete this rule?')) store.remove('rules', btn.dataset.id);
+      btn.addEventListener('click', async () => {
+        const rule = store.get('rules', btn.dataset.id);
+        const name = rule ? rule.name : 'this rule';
+        if (confirm(`Delete rule "${name}"? This cannot be undone.`)) {
+          store.remove('rules', btn.dataset.id);
+        }
       });
     });
   }
 
+  function validateField(field, value) {
+    const errEl = container.querySelector(`#err-fw-${field}`);
+    const input = container.querySelector(`#fw-${field}`);
+    if (!errEl || !input) return;
+
+    const tempRule = { ...formState, [field]: value };
+    const { errors } = validateFirewallRule(tempRule);
+
+    if (errors[field]) {
+      errEl.textContent = errors[field];
+      input.classList.add('input-error');
+      input.classList.remove('input-valid');
+    } else {
+      errEl.textContent = '';
+      input.classList.remove('input-error');
+      if (value.trim()) {
+        input.classList.add('input-valid');
+      }
+    }
+  }
+
   function handleSubmit(e) {
     e.preventDefault();
-    const parseList = (raw) => raw.split(',').map(s => s.trim()).filter(Boolean);
 
-    const sourceStr = container.querySelector('#fw-source')?.value || '';
-    const destStr = container.querySelector('#fw-dest')?.value || '';
-    const serviceStr = container.querySelector('#fw-service')?.value || '';
+    // Get values from tag inputs
+    tagInputs.forEach(ti => {
+      // Values already synced via onChange
+    });
 
     formState.name = container.querySelector('#fw-name')?.value?.trim() || '';
-    formState.source = parseList(sourceStr);
-    formState.destination = parseList(destStr);
-    formState.service = parseList(serviceStr);
     formState.action = container.querySelector('#fw-action')?.value || 'allow';
     formState.log = container.querySelector('#fw-log')?.checked || false;
     formState.schedule = container.querySelector('#fw-schedule')?.value?.trim() || '';
@@ -195,6 +266,9 @@ export function createFirewallForm(container) {
       if (input) input.classList.remove('input-error');
     }
 
+    // Also clear tag-input error states
+    container.querySelectorAll('.tag-input-wrapper').forEach(w => w.classList.remove('has-error'));
+
     if (!valid) {
       const fieldMap = { name: 'name', source: 'source', destination: 'dest', service: 'service' };
       for (const [key, msg] of Object.entries(errors)) {
@@ -203,29 +277,45 @@ export function createFirewallForm(container) {
         if (errEl) errEl.textContent = msg;
         const input = container.querySelector(`#fw-${domId}`);
         if (input) input.classList.add('input-error');
+        // Mark tag-input wrapper if present
+        const wrapper = container.querySelector(`#fw-${domId}`)?.closest('.form-group')?.querySelector('.tag-input-wrapper');
+        if (wrapper) wrapper.classList.add('has-error');
       }
       return;
     }
-
-    // Remove temporary display fields before saving
-    delete formState._sourceStr;
-    delete formState._destStr;
-    delete formState._serviceStr;
 
     if (editingId) {
       store.update('rules', editingId, { ...formState });
       editingId = null;
     } else {
+      // Apply auto-naming if enabled
+      const namingSettings = loadNamingSettings();
+      if (namingSettings.enabled) {
+        const autoName = generateAutoName('fw', formState.name, formState.action);
+        formState.name = autoName;
+      }
       store.add('rules', createFirewallRule({ ...formState }));
     }
     formState = createFirewallRule();
     render();
   }
 
+  // Destroy tag inputs on cleanup
+  const origDestroy = () => {
+    tagInputs.forEach(ti => ti.destroy());
+    tagInputs = [];
+  };
+
   const unsub = store.subscribe('rules', () => render());
   render();
 
-  return { destroy() { unsub(); container.innerHTML = ''; } };
+  return {
+    destroy() {
+      unsub();
+      origDestroy();
+      container.innerHTML = '';
+    },
+  };
 }
 
 function escapeHtml(str) {
