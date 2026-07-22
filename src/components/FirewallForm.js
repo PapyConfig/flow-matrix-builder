@@ -207,6 +207,11 @@ export function createFirewallForm(container) {
       return;
     }
 
+    // Remove temporary display fields before saving
+    delete formState._sourceStr;
+    delete formState._destStr;
+    delete formState._serviceStr;
+
     if (editingId) {
       store.update('rules', editingId, { ...formState });
       editingId = null;
